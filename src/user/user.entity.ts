@@ -1,4 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, UpdateDateColumn, CreateDateColumn } from 'typeorm';
+import { Exclude } from 'class-transformer';
 import { Role } from '../common/enums/role.enum';
 
 @Entity('users')
@@ -9,6 +10,7 @@ export class User {
   @Column({ length: 255, unique: true })
   email: string;
 
+  @Exclude()
   @Column({ length: 255 })
   passwordHash: string;
 

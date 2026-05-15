@@ -1,95 +1,88 @@
-import { MigrationInterface, QueryRunner } from "typeorm";
+import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class InitialSchemaMigration1678886400000 implements MigrationInterface {
+export class InitialSchemaMigration1714521600000 implements MigrationInterface {
+  name = 'InitialSchemaMigration1714521600000';
 
-    name = 'InitialSchemaMigration1678886400000';
+  public async up(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`);
 
-    async up(queryRunner: QueryRunner): Promise<void> {
-        // Create User table
-        await queryRunner.createTable(new Table({
-            name: "users",
-            columns: [
-                { name: "id", type: "uuid", isPrimary: true, generated: "uuid_generate_v4" },
-                { name: "email", type: "varchar", isUnique: true },
-                { name: "passwordHash", type: "varchar" },
-                { name: "firstName", type: "varchar" },
-                { name: "lastName", type: "varchar" },
-                { name: "role", type: "enum", enum: ["admin", "librarian", "member"], default: "'member'" },
-                { name: "isActive", type: "boolean", default: true },
-                { name: "createdAt", type: "timestamp", default: "now()" },
-                { name: "updatedAt", type: "timestamp", default: "now()" }
-            ],
-        }), true);
+    // Create User role enum
+    await queryRunner.query(`
+      CREATE TYPE "users_role_enum" AS ENUM ('admin','librarian','member')
+    `);
 
-        // Add indexes for users
-        await queryRunner.createIndex("users", new TableIndex({
-            name: "IDX_USERS_EMAIL",
-            columnNames: ["email"],
-            unique: true,
-        }));
+    // Create users table
+    await queryRunner.query(`
+      CREATE TABLE "users" (
+        "id" uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+        "email" varchar(255) NOT NULL UNIQUE,
+        "passwordHash" varchar(255) NOT NULL,
+        "firstName" varchar(100) NOT NULL,
+        "lastName" varchar(100) NOT NULL,
+        "role" "users_role_enum" NOT NULL DEFAULT 'member',
+        "isActive" boolean NOT NULL DEFAULT true,
+        "createdAt" TIMESTAMP NOT NULL DEFAULT now(),
+        "updatedAt" TIMESTAMP NOT NULL DEFAULT now()
+      )
+    `);
+    await queryRunner.query(`CREATE INDEX "IDX_users_email" ON "users" ("email")`);
 
-        // Create Item table
-        await queryRunner.createTable(new Table({
-            name: "items",
-            columns: [
-                { name: "id", type: "uuid", isPrimary: true, generated: "uuid_generate_v4" },
-                { name: "code", type: "varchar", isUnique: true },
-                { name: "title", type: "varchar" },
-                { name: "type", type: "enum", enum: ["book", "magazine", "equipment"] },
-                { name: "isActive", type: "boolean", default: true },
-                { name: "createdAt", type: "timestamp", default: "now()" },
-                { name: "updatedAt", type: "timestamp", default: "now()" }
-            ],
-        }), true);
+    // Create Item type enum
+    await queryRunner.query(`
+      CREATE TYPE "items_type_enum" AS ENUM ('book','magazine','equipment')
+    `);
 
-        // Create Loan table
-        await queryRunner.createTable(new Table({
-            name: "loans",
-            columns: [
-                { name: "id", type: "uuid", isPrimary: true, generated: "uuid_generate_v4" },
-                { name: "userId", type: "uuid" },
-                { name: "itemId", type: "uuid" },
-                { name: "loanedAt", type: "timestamp with time zone" },
-                { name: "dueAt", type: "timestamp with time zone" },
-                { name: "returnedAt", type: "timestamp with time zone", isNullable: true },
-                { name: "status", type: "enum", enum: ["active", "returned", "overdue", "lost"], default: "'active'" },
-                { name: "priority", type: "enum", enum: ["normal", "urgent"], default: "'normal'" },
-                { name: "fineAmount", type: "decimal", precision: 10, scale: 2, default: "0.00" },
-                { name: "createdAt", type: "timestamp", default: "now()" },
-                { name: "updatedAt", type: "timestamp", default: "now()" }
-            ],
-        }), true);
+    // Create items table
+    await queryRunner.query(`
+      CREATE TABLE "items" (
+        "id" uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+        "code" varchar(32) NOT NULL UNIQUE,
+        "title" varchar(255) NOT NULL,
+        "type" "items_type_enum" NOT NULL,
+        "isActive" boolean NOT NULL DEFAULT true,
+        "createdAt" TIMESTAMP NOT NULL DEFAULT now(),
+        "updatedAt" TIMESTAMP NOT NULL DEFAULT now()
+      )
+    `);
+    await queryRunner.query(`CREATE INDEX "IDX_items_code" ON "items" ("code")`);
 
-        // Add foreign keys
-        await queryRunner.createForeignKey("loans", new TableForeignKey({
-            columnNames: ["userId"],
-            referencedColumnNames: ["id"],
-            referencedTableName: "users",
-            onDelete: "RESTRICT",
-        }));
+    // Create Loan status enum
+    await queryRunner.query(`
+      CREATE TYPE "loans_status_enum" AS ENUM ('active','returned','overdue','lost')
+    `);
 
-        await queryRunner.createForeignKey("loans", new TableForeignKey({
-            columnNames: ["itemId"],
-            referencedColumnNames: ["id"],
-            referencedTableName: "items",
-            onDelete: "RESTRICT",
-        }));
+    // Create Loan priority enum
+    await queryRunner.query(`
+      CREATE TYPE "loans_priority_enum" AS ENUM ('normal','urgent')
+    `);
 
-        // Add indexes
-        await queryRunner.createIndex("loans", new TableIndex({
-            name: "IDX_LOANS_ITEM_STATUS",
-            columnNames: ["itemId", "status"],
-        }));
+    // Create loans table
+    await queryRunner.query(`
+      CREATE TABLE "loans" (
+        "id" uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+        "userId" uuid NOT NULL REFERENCES "users"("id") ON DELETE RESTRICT,
+        "itemId" uuid NOT NULL REFERENCES "items"("id") ON DELETE RESTRICT,
+        "loanedAt" timestamptz NOT NULL,
+        "dueAt" timestamptz NOT NULL,
+        "returnedAt" timestamptz NULL,
+        "status" "loans_status_enum" NOT NULL DEFAULT 'active',
+        "priority" "loans_priority_enum" NOT NULL DEFAULT 'normal',
+        "fineAmount" decimal(10,2) NOT NULL DEFAULT '0.00',
+        "createdAt" TIMESTAMP NOT NULL DEFAULT now(),
+        "updatedAt" TIMESTAMP NOT NULL DEFAULT now()
+      )
+    `);
+    await queryRunner.query(`CREATE INDEX "IDX_loans_item_status" ON "loans" ("itemId","status")`);
+    await queryRunner.query(`CREATE INDEX "IDX_loans_user_status" ON "loans" ("userId","status")`);
+  }
 
-        await queryRunner.createIndex("loans", new TableIndex({
-            name: "IDX_LOANS_USER_STATUS",
-            columnNames: ["userId", "status"],
-        }));
-    }
-
-    async down(queryRunner: QueryRunner): Promise<void> {
-        await queryRunner.dropTable("loans");
-        await queryRunner.dropTable("items");
-        await queryRunner.dropTable("users");
-    }
+  public async down(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`DROP TABLE IF EXISTS "loans"`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "loans_priority_enum"`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "loans_status_enum"`);
+    await queryRunner.query(`DROP TABLE IF EXISTS "items"`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "items_type_enum"`);
+    await queryRunner.query(`DROP TABLE IF EXISTS "users"`);
+    await queryRunner.query(`DROP TYPE IF EXISTS "users_role_enum"`);
+  }
 }

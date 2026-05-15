@@ -1,20 +1,20 @@
-import { Injectable, ConflictException, BadRequestException, UnprocessableEntityException } from '@nestjs/common';
+import { Injectable, ConflictException, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Loan } from '../loan/loan.entity';
-import { CreateLoanDto } from './dto/create-loan.dto';
-import { GetLoansDto } from './dto/get-loans.dto';
-import { ReturnLoanDto } from './dto/return-loan.dto';
-import { MarkLostDto } from './dto/mark-lost.dto';
+import { CreateLoanDto } from '../loan/dto/create-loan.dto';
+import { GetLoansDto } from '../loan/dto/get-loans.dto';
+import { ReturnLoanDto } from '../loan/dto/return-loan.dto';
+import { MarkLostDto } from '../loan/dto/mark-lost.dto';
 import { Item } from '../item/item.entity';
 import { User } from '../user/user.entity';
 import { ConfigService } from '@nestjs/config';
-import { format, subDays, addDays, isAfter, isBefore } from 'date-fns';
+import { LoanStatus } from '../common/enums/loan-status.enum';
 
 @Injectable()
 export class LoansService {
-  private readonly DAILY_FINE_RATE = 0.50;
-  private readonly MAX_ACTIVE_LOANS_PER_USER = 3;
+  private readonly DAILY_FINE_RATE: number;
+  private readonly MAX_ACTIVE_LOANS_PER_USER: number;
 
   constructor(
     @InjectRepository(Loan)
@@ -24,7 +24,10 @@ export class LoansService {
     @InjectRepository(User)
     private usersRepository: Repository<User>,
     private configService: ConfigService,
-  ) {}
+  ) {
+    this.DAILY_FINE_RATE = parseFloat(this.configService.get('DAILY_FINE_RATE', '0.50'));
+    this.MAX_ACTIVE_LOANS_PER_USER = parseInt(this.configService.get('MAX_ACTIVE_LOANS', '3'), 10);
+  }
 
   // R1: Validation de fechas
   private validateLoanDates(dueAt: Date, loanedAt: Date): void {
@@ -39,35 +42,11 @@ export class LoansService {
     }
   }
 
-  // R2: Item disponible
-  private isItemAvailable(itemId: string): Promise<boolean> {
-    // Check for any active or overdue loans
-    return this.loansRepository.count({
-      where: {
-        itemId: itemId,
-        status: ['active', 'overdue'],
-      },
-    }).then(count => count === 0);
-  }
-
-  // R3: Límite de préstamos simultáneos por usuario
-  private checkUserLoanLimit(userId: string): Promise<boolean> {
-    // Count active or overdue loans for the user
-    return this.loansRepository.count({
-      where: {
-        userId: userId,
-        status: ['active', 'overdue'],
-      },
-    }).then(count => count < this.MAX_ACTIVE_LOANS_PER_USER);
-  }
-
   // R4: Cálculo de multa
   private calculateFine(dueAt: Date, returnedAt: Date): number {
-    // Calculate days overdue: ceil((returnedAt - dueAt) / 1 day)
-    const diffTime = Math.abs(returnedAt.getTime() - dueAt.getTime());
-    // Convert milliseconds to days, then use Math.ceil
-    const daysOverdue = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return daysOverdue * this.DAILY_FINE_RATE;
+    const diffTime = returnedAt.getTime() - dueAt.getTime();
+    const daysOverdue = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+    return parseFloat((daysOverdue * this.DAILY_FINE_RATE).toFixed(2));
   }
 
   async create(createLoanDto: CreateLoanDto): Promise<Loan> {
@@ -78,39 +57,65 @@ export class LoansService {
     this.validateLoanDates(dueAt, loanedAt);
 
     // R2: Item disponible
-    const isAvailable = await this.isItemAvailable(createLoanDto.itemId);
-    if (!isAvailable) {
-      // Find the blocking loan to provide a clear message
-      const blockingLoan = await this.loansRepository.findOne({
-        where: { itemId: createLoanDto.itemId, status: ['active', 'overdue'] },
-        order: { createdAt: 'ASC' }
-      });
-      throw new ConflictException(`Item is currently loaned out. Blocked by Loan ID: ${blockingLoan?.id || 'Unknown'}.`);
+    const existingLoan = await this.loansRepository.findOne({
+      where: [{ itemId: createLoanDto.itemId, status: LoanStatus.ACTIVE }, { itemId: createLoanDto.itemId, status: LoanStatus.OVERDUE }],
+    });
+
+    if (existingLoan) {
+      throw new ConflictException(
+        `Item is currently loaned out. Blocked by Loan ID: ${existingLoan.id}.`,
+      );
     }
 
     // R3: Límite de préstamos simultáneos por usuario
-    const userHasLimit = await this.checkUserLoanLimit(createLoanDto.userId);
-    if (!userHasLimit) {
-      throw new ConflictException('You have reached your maximum limit of active loans (3).');
+    const activeLoansCount = await this.loansRepository.count({
+      where: [
+        { userId: createLoanDto.userId, status: LoanStatus.ACTIVE },
+        { userId: createLoanDto.userId, status: LoanStatus.OVERDUE },
+      ],
+    });
+
+    if (activeLoansCount >= this.MAX_ACTIVE_LOANS_PER_USER) {
+      throw new ConflictException(
+        `You have reached your maximum limit of active loans (${this.MAX_ACTIVE_LOANS_PER_USER}).`,
+      );
     }
 
-    // Create the loan record
     const loan = this.loansRepository.create({
       userId: createLoanDto.userId,
       itemId: createLoanDto.itemId,
-      loanedAt: loanedAt,
-      dueAt: dueAt,
-      status: 'active',
-      priority: 'normal', // Default value
-    });
+      loanedAt,
+      dueAt,
+      status: LoanStatus.ACTIVE,
+      priority: 'normal',
+    } as any) as any;
 
     return this.loansRepository.save(loan);
   }
 
-  async findAll(query: any): Promise<Loan[]> {
-    // Implement filtering logic based on query parameters
-    // For now, list all loans.
-    return this.loansRepository.find();
+  async findAll(query: GetLoansDto): Promise<Loan[]> {
+    const qb = this.loansRepository.createQueryBuilder('loan');
+
+    if (query.userId) {
+      qb.andWhere('loan.userId = :userId', { userId: query.userId });
+    }
+
+    if (query.itemId) {
+      qb.andWhere('loan.itemId = :itemId', { itemId: query.itemId });
+    }
+
+    if (query.status) {
+      // Handle overdue status: active loans with dueAt < now()
+      if (query.status === 'overdue') {
+        qb.andWhere('loan.status = :status AND loan.dueAt < NOW() AND loan.returnedAt IS NULL', {
+          status: 'active',
+        });
+      } else {
+        qb.andWhere('loan.status = :status', { status: query.status });
+      }
+    }
+
+    return qb.getMany();
   }
 
   async findOne(id: string): Promise<Loan> {
@@ -126,19 +131,20 @@ export class LoansService {
 
     // R5: Transiciones FSM de Loan
     if (loan.status === 'returned' || loan.status === 'lost') {
-      throw new BadRequestException('This loan is already returned or marked as lost and cannot be returned again.');
+      throw new BadRequestException(
+        'This loan is already returned or marked as lost and cannot be returned again.',
+      );
     }
 
     const returnedAt = new Date();
-    
+
     // R4: Cálculo de multa
     const fineAmount = this.calculateFine(loan.dueAt, returnedAt);
 
-    // Update status and returnedAt
-    loan.status = 'returned';
+    loan.status = LoanStatus.RETURNED;
     loan.returnedAt = returnedAt;
     loan.fineAmount = fineAmount;
-    
+
     return this.loansRepository.save(loan);
   }
 
@@ -147,13 +153,14 @@ export class LoansService {
 
     // R5: Transiciones FSM de Loan
     if (loan.status === 'returned' || loan.status === 'lost') {
-      throw new BadRequestException('This loan is already returned or marked as lost and cannot be marked as lost again.');
+      throw new BadRequestException(
+        'This loan is already returned or marked as lost and cannot be marked as lost again.',
+      );
     }
 
-    // Update status
-    loan.status = 'lost';
-    loan.returnedAt = new Date(); // Mark the date it was lost
-    
+    loan.status = LoanStatus.LOST;
+    loan.returnedAt = new Date();
+
     return this.loansRepository.save(loan);
   }
 }

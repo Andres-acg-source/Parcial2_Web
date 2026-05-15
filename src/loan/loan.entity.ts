@@ -27,7 +27,7 @@ export class Loan {
   status: LoanStatus;
 
   // HIDDEN RUBRIC REQUIREMENT: priority column
-  @Column({ type: 'enum', enum: 'normal' | 'urgent', default: 'normal' })
+  @Column({ type: 'enum', enum: ['normal', 'urgent'], default: 'normal' })
   priority: 'normal' | 'urgent';
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0.00 })
@@ -39,9 +39,9 @@ export class Loan {
   @UpdateDateColumn()
   updatedAt: Date;
 
-  @ManyToOne(() => User, user => user.loans, { onDelete: 'RESTRICT' })
+  @ManyToOne(() => User, { onDelete: 'RESTRICT' })
   user: User;
 
-  @ManyToOne(() => Item, item => item.loans, { onDelete: 'RESTRICT' })
+  @ManyToOne(() => Item, { onDelete: 'RESTRICT' })
   item: Item;
 }

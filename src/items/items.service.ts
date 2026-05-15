@@ -4,49 +4,70 @@ import { Repository } from 'typeorm';
 import { Item } from '../item/item.entity';
 import { CreateItemDto } from './dto/create-item.dto';
 import { UpdateItemDto } from './dto/update-item.dto';
+import { Loan } from '../loan/loan.entity';
+import { LoanStatus } from '../common/enums/loan-status.enum';
 
 @Injectable()
 export class ItemsService {
   constructor(
     @InjectRepository(Item)
     private itemsRepository: Repository<Item>,
+    @InjectRepository(Loan)
+    private loansRepository: Repository<Loan>,
   ) {}
 
   async create(createItemDto: CreateItemDto): Promise<Item> {
-    // Check for unique code before creation
     const existingItem = await this.itemsRepository.findOne({ where: { code: createItemDto.code } });
     if (existingItem) {
       throw new ConflictException(`Item with code ${createItemDto.code} already exists.`);
     }
 
-    const item = this.itemsRepository.create({
-      ...createItemDto,
-      // Ensure default values are handled by the entity/DB, but we can set them here if needed
-    });
-
+    const item = this.itemsRepository.create(createItemDto);
     return this.itemsRepository.save(item);
   }
 
-  async findAll(query: any): Promise<Item[]> {
-    // Implement filtering logic based on query parameters (e.g., ?type=book)
-    // For now, list all active items.
-    return this.itemsRepository.find({ where: { isActive: true } });
+  async findAll(type?: string): Promise<(Item & { isAvailable: boolean })[]> {
+    const query = this.itemsRepository.createQueryBuilder('item').where('item.isActive = true');
+
+    if (type) {
+      query.andWhere('item.type = :type', { type });
+    }
+
+    const items = await query.getMany();
+
+    // Fetch availability for each item
+    const itemsWithAvailability = await Promise.all(
+      items.map(async (item) => {
+        const activeLoans = await this.loansRepository.count({
+          where: { itemId: item.id, status: LoanStatus.ACTIVE },
+        });
+        return { ...item, isAvailable: activeLoans === 0 };
+      }),
+    );
+
+    return itemsWithAvailability;
   }
 
-  async findOne(id: string): Promise<Item> {
+  async findOne(id: string): Promise<Item & { isAvailable: boolean }> {
     const item = await this.itemsRepository.findOne({ where: { id } });
     if (!item) {
       throw new NotFoundException(`Item with ID ${id} not found`);
     }
-    return item;
+
+    const activeLoans = await this.loansRepository.count({
+      where: { itemId: item.id, status: LoanStatus.ACTIVE },
+    });
+
+    return { ...item, isAvailable: activeLoans === 0 };
   }
 
   async update(id: string, updateItemDto: UpdateItemDto): Promise<Item> {
-    const item = await this.findOne(id);
-    
-    // Apply updates, respecting optional fields
-    Object.assign(item, updateItemDto);
+    const item = await this.itemsRepository.findOne({ where: { id } });
+    if (!item) {
+      throw new NotFoundException(`Item with ID ${id} not found`);
+    }
 
+    Object.assign(item, updateItemDto);
     return this.itemsRepository.save(item);
   }
 
